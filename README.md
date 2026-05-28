@@ -185,14 +185,11 @@ We have opened a WeChat group. Additionally, we represent **SoulApp** and warmly
 If you find our work useful in your research, please consider citing:
 
 ```
-@misc{yu2026soulxflashheadoracleguidedgenerationinfinite,
-      title={SoulX-FlashHead: Oracle-guided Generation of Infinite Real-time Streaming Talking Heads}, 
-      author={Tan Yu and Qian Qiao and Le Shen and Ke Zhou and Jincheng Hu and Dian Sheng and Bo Hu and Haoming Qin and Jun Gao and Changhai Zhou and Shunshun Yin and Siyuan Liu},
-      year={2026},
-      eprint={2602.07449},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2602.07449}, 
+@article{yu2026soulx,
+  title={SoulX-FlashHead: Oracle-guided Generation of Infinite Real-time Streaming Talking Heads},
+  author={Yu, Tan and Qiao, Qian and Shen, Le and Zhou, Ke and Hu, Jincheng and Sheng, Dian and Hu, Bo and Qin, Haoming and Gao, Jun and Zhou, Changhai and others},
+  journal={arXiv preprint arXiv:2602.07449},
+  year={2026}
 }
 ```
 
