@@ -226,7 +226,7 @@ class FlashHeadPipeline:
         return audio_emb
 
     @torch.no_grad()
-    def generate(self, audio_embedding):
+    def generate(self, audio_embedding, context_scale: float = 1.0):
         # evaluation mode
         with torch.no_grad():
 
@@ -251,6 +251,7 @@ class FlashHeadPipeline:
                     timestep=self.timesteps[i],
                     context=audio_embedding,
                     y=self.ref_img_latent.unsqueeze(0),
+                    context_scale=context_scale,
                 )[0]
 
                 if self.model_type == "pretrained":
@@ -259,6 +260,7 @@ class FlashHeadPipeline:
                         timestep=self.timesteps[i],
                         context=torch.zeros_like(audio_embedding),
                         y=self.ref_img_latent.unsqueeze(0),
+                        context_scale=context_scale,
                     )[0]
                     flow_pred = flow_pred_drop_audio + self.audio_guide_scale * (flow_pred - flow_pred_drop_audio)
 

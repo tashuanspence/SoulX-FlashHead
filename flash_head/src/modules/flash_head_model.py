@@ -412,6 +412,7 @@ class WanModelAudioProject(ModelMixin, ConfigMixin):
                 timestep: torch.Tensor, #(9,)
                 context: torch.Tensor, #(5, 33, 12, 768)
                 y: Optional[torch.Tensor] = None, #(1, 16, 9, 64, 64)
+                context_scale: float = 1.0,
                 use_gradient_checkpointing: bool = False,
                 use_gradient_checkpointing_offload: bool = False,
                 **kwargs,
@@ -469,6 +470,8 @@ class WanModelAudioProject(ModelMixin, ConfigMixin):
             first_frame_audio, 
             latter_frames_audio_processed
         ).to(x.dtype)  # (bsz, 9, 32, 1536)
+        if context_scale != 1.0:
+            context = context * context_scale
 
         if self.use_usp:
             x = torch.chunk(x, self.sp_size, dim=1)[self.sp_rank]
