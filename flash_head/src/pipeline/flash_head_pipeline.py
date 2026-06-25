@@ -227,6 +227,9 @@ class FlashHeadPipeline:
 
     @torch.no_grad()
     def generate(self, audio_embedding, context_scale: float = 1.0):
+        if self.rank == 0:
+            logger.info(f'[generate] starting: frames={self.frame_num}, steps={len(self.timesteps)-1}, context_scale={context_scale}')
+        gen_start_time = time.time()
         # evaluation mode
         with torch.no_grad():
 
@@ -277,41 +280,19 @@ class FlashHeadPipeline:
 
                     noise = (1 - t_i_1) * x_0 + t_i_1 * torch.randn(x_0.size(), dtype=x_0.dtype, device=self.device, generator=self.generator)
 
-                torch.cuda.synchronize()
-                end_time = time.time()
-                if self.rank == 0:
-                    print(f'[generate] model denoise per step: {end_time - start_time}s')
 
             noise[:, :self.latent_motion_frames.shape[1]] = self.latent_motion_frames
 
-            torch.cuda.synchronize()
-            start_decode_time = time.time()
-
             videos = self.vae.decode(noise)
-
-            torch.cuda.synchronize()
-            end_decode_time = time.time()
-            if self.rank == 0:
-                print(f'[generate] decode video frames: {end_decode_time - start_decode_time}s')
         
-        torch.cuda.synchronize()
-        start_color_correction_time = time.time()
         if self.color_correction_strength > 0.0:
             videos = match_and_blend_colors_torch(videos, self.original_color_reference, self.color_correction_strength)
 
         cond_frame = videos[:, :, -self.motion_frames_num:].to(self.device)
-        torch.cuda.synchronize()
-        end_color_correction_time = time.time()
-        if self.rank == 0:
-            print(f'[generate] color correction: {end_color_correction_time - start_color_correction_time}s')
-
-        torch.cuda.synchronize()
-        start_encode_time = time.time()
         self.latent_motion_frames = self.vae.encode(cond_frame)
-        torch.cuda.synchronize()
-        end_encode_time = time.time()
+
         if self.rank == 0:
-            print(f'[generate] encode motion frames: {end_encode_time - start_encode_time}s')
+            logger.info(f'[generate] complete: {time.time() - gen_start_time:.3f}s')
 
         gen_video_samples = videos #[:, :, self.motion_frames_num:]
 
