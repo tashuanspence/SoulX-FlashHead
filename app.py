@@ -389,6 +389,10 @@ class ConcurrencyStatusResponse(BaseModel):
     sessions: list[SessionStatus]
 
 
+EXPRESSION_SCALE_MIN = 0.65
+EXPRESSION_SCALE_MAX = 1.35
+
+
 class GenerateArgs(BaseModel):
     model_type: Literal["lite", "pro"] = "lite"
     base_seed: int = 42
@@ -406,8 +410,8 @@ class GenerateArgs(BaseModel):
                 "Use use_face_crop=true for face-focused square videos, "
                 "or use_face_crop=false + preserve_aspect_ratio=true for aspect-ratio-preserved videos."
             )
-        if not 0.2 <= self.expression_scale <= 2.0:
-            raise ValueError("expression_scale must be between 0.2 and 2.0")
+        if not EXPRESSION_SCALE_MIN <= self.expression_scale <= EXPRESSION_SCALE_MAX:
+            raise ValueError(f"expression_scale must be between {EXPRESSION_SCALE_MIN} and {EXPRESSION_SCALE_MAX}")
         return self
 
 
@@ -772,7 +776,7 @@ async def generate_mpeg_stream(
     silence_padding_sec: float = Form(0.0, description="Number of seconds of silence to prepend before generation begins."),
     fragment_duration_ms: int = Form(None, description="Optional MP4 fragment duration in milliseconds. If omitted, server default is used."),
     preserve_aspect_ratio: bool = Form(False, description="If true, preserve input image aspect ratio by compositing 512x512 frames onto original background."),
-    expression_scale: float = Form(1.0, ge=0.2, le=2.0, description="Intensity of lip sync and head movement."),
+    expression_scale: float = Form(1.0, ge=EXPRESSION_SCALE_MIN, le=EXPRESSION_SCALE_MAX, description="Intensity of lip sync and head movement."),
 ):
     """
     Stream a fragmented MP4 (fMP4) with server-side audio muxing.
@@ -1203,7 +1207,7 @@ async def generate_video(
     use_face_crop: bool = Form(False, description="If true, apply inference-time face crop handling instead of backend center crop."),
     silence_padding_sec: float = Form(0.0, description="Number of seconds of silence to prepend before generation begins."),
     preserve_aspect_ratio: bool = Form(False, description="If true, preserve input image aspect ratio by compositing 512x512 frames onto original background."),
-    expression_scale: float = Form(1.0, ge=0.2, le=2.0, description="Intensity of lip sync and head movement."),
+    expression_scale: float = Form(1.0, ge=EXPRESSION_SCALE_MIN, le=EXPRESSION_SCALE_MAX, description="Intensity of lip sync and head movement."),
 ):
     request_start = time.time()
     audio_validation_error = _validate_audio_inputs(audio, audio_url)

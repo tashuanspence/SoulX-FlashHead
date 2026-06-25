@@ -230,10 +230,8 @@ class FlashHeadPipeline:
         if self.rank == 0:
             logger.info(f'[generate] starting: frames={self.frame_num}, steps={len(self.timesteps)-1}, context_scale={context_scale}')
         gen_start_time = time.time()
-        # evaluation mode
         with torch.no_grad():
 
-            # sample videos
             noise = torch.randn(
                 self.config.out_dim, 
                 (self.frame_num - 1) // self.config.vae_stride[0] + 1,
@@ -243,19 +241,43 @@ class FlashHeadPipeline:
                 device=self.device,
                 generator=self.generator)
 
-            for i in range(len(self.timesteps)-1):
+            step_count = len(self.timesteps) - 1
+            ramp_schedule = [0.0, 0.25, 0.6, 1.0]
+
+            for i in range(step_count):
                 torch.cuda.synchronize()
                 start_time = time.time()
 
                 noise[:, :self.latent_motion_frames.shape[1]] = self.latent_motion_frames
 
-                flow_pred = self.model(
-                    x=noise.unsqueeze(0),
-                    timestep=self.timesteps[i],
-                    context=audio_embedding,
-                    y=self.ref_img_latent.unsqueeze(0),
-                    context_scale=context_scale,
-                )[0]
+                if context_scale != 1.0 and self.model_type != "pretrained":
+                    if step_count == len(ramp_schedule):
+                        ramp = ramp_schedule[i]
+                    elif step_count > 1:
+                        ramp = (i / (step_count - 1)) ** 1.5
+                    else:
+                        ramp = 1.0
+                    effective_context_scale = 1.0 + (context_scale - 1.0) * ramp
+                    flow_pred_audio = self.model(
+                        x=noise.unsqueeze(0),
+                        timestep=self.timesteps[i],
+                        context=audio_embedding,
+                        y=self.ref_img_latent.unsqueeze(0),
+                    )[0]
+                    flow_pred_neutral = self.model(
+                        x=noise.unsqueeze(0),
+                        timestep=self.timesteps[i],
+                        context=torch.zeros_like(audio_embedding),
+                        y=self.ref_img_latent.unsqueeze(0),
+                    )[0]
+                    flow_pred = flow_pred_neutral + effective_context_scale * (flow_pred_audio - flow_pred_neutral)
+                else:
+                    flow_pred = self.model(
+                        x=noise.unsqueeze(0),
+                        timestep=self.timesteps[i],
+                        context=audio_embedding,
+                        y=self.ref_img_latent.unsqueeze(0),
+                    )[0]
 
                 if self.model_type == "pretrained":
                     flow_pred_drop_audio = self.model(
@@ -263,17 +285,14 @@ class FlashHeadPipeline:
                         timestep=self.timesteps[i],
                         context=torch.zeros_like(audio_embedding),
                         y=self.ref_img_latent.unsqueeze(0),
-                        context_scale=context_scale,
                     )[0]
-                    flow_pred = flow_pred_drop_audio + self.audio_guide_scale * (flow_pred - flow_pred_drop_audio)
+                    flow_pred = flow_pred_drop_audio + self.audio_guide_scale * context_scale * (flow_pred - flow_pred_drop_audio)
 
-                    # update latent
                     dt = self.timesteps[i] - self.timesteps[i + 1]
                     dt = (dt / self.num_timesteps).to(self.param_dtype)
                     noise = noise - flow_pred * dt[:, None, None, None]
                 
                 else:
-                    # update latent
                     t_i = (self.timesteps[i][:, None, None, None] / self.num_timesteps).to(self.param_dtype)
                     t_i_1 = (self.timesteps[i+1][:, None, None, None] / self.num_timesteps).to(self.param_dtype)
                     x_0 = noise - flow_pred * t_i
@@ -289,7 +308,12 @@ class FlashHeadPipeline:
             videos = match_and_blend_colors_torch(videos, self.original_color_reference, self.color_correction_strength)
 
         cond_frame = videos[:, :, -self.motion_frames_num:].to(self.device)
-        self.latent_motion_frames = self.vae.encode(cond_frame)
+        latent_motion_frames = self.vae.encode(cond_frame)
+        if context_scale < 1.0:
+            damping = min(max((1.0 - context_scale) / 0.35, 0.0), 1.0) * 0.6
+            reference_motion_frames = self.ref_img_latent[:, :latent_motion_frames.shape[1]].to(latent_motion_frames.device, dtype=latent_motion_frames.dtype)
+            latent_motion_frames = latent_motion_frames * (1.0 - damping) + reference_motion_frames * damping
+        self.latent_motion_frames = latent_motion_frames
 
         if self.rank == 0:
             logger.info(f'[generate] complete: {time.time() - gen_start_time:.3f}s')

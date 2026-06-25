@@ -470,8 +470,6 @@ class WanModelAudioProject(ModelMixin, ConfigMixin):
             first_frame_audio, 
             latter_frames_audio_processed
         ).to(x.dtype)  # (bsz, 9, 32, 1536)
-        if context_scale != 1.0:
-            context = context * context_scale
 
         if self.use_usp:
             x = torch.chunk(x, self.sp_size, dim=1)[self.sp_rank]
