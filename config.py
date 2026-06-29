@@ -26,6 +26,14 @@ WAV2VEC_DIR: str = os.environ.get(
 # Default model type: "lite" for concurrent streaming, "pro" for highest quality
 MODEL_TYPE: str = os.environ.get("MODEL_TYPE", "lite")
 
+# Model types to fully load and compile during startup warmup.
+# Defaults to [MODEL_TYPE] to preserve current behavior. Set to "lite,pro" to
+# pre-warm both variants so the first /stream-efs request for either type is fast.
+_raw_warmup = os.environ.get("SOULX_WARMUP_MODEL_TYPES", MODEL_TYPE)
+WARMUP_MODEL_TYPES: list[str] = [
+    mt.strip() for mt in _raw_warmup.split(",") if mt.strip()
+]
+
 # Distributed / multi-GPU (USP) settings
 WORLD_SIZE: int = int(os.environ.get("WORLD_SIZE", 1))
 RANK: int = int(os.environ.get("RANK", 0))

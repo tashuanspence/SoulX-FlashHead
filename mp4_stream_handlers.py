@@ -63,9 +63,15 @@ async def generate_mp4_stream(
 
     tags = generation_metric_tags("mpeg_stream", model_type, endpoint="generate-mpeg-stream")
 
-    pipeline = init_pipeline(FLASHHEAD_CKPT_DIR, WAV2VEC_DIR, model_type)
-
     session_id = request_id or f"mpeg_{uuid.uuid4().hex[:8]}"
+
+    init_start = time.time()
+    pipeline = init_pipeline(FLASHHEAD_CKPT_DIR, WAV2VEC_DIR, model_type)
+    logger.info(
+        f"[{session_id}] pipeline init/lazy-load for model_type={model_type} "
+        f"took {(time.time() - init_start) * 1000:.1f}ms"
+    )
+
     ctx = SessionContext(
         session_id=session_id,
         cond_image_path_or_dir=driving_image_path,
@@ -91,7 +97,12 @@ async def generate_mp4_stream(
     # NOT block the other, which was the root cause of avatar cross-contamination.
     async with _session_manager.gpu_semaphore:
         logger.debug(f"[{session_id}] Acquiring gpu_semaphore for session setup (MPEG)")
+        setup_start = time.time()
         await loop.run_in_executor(None, prepare_session_base_data, pipeline, ctx)
+        logger.info(
+            f"[{session_id}] prepare_session_base_data took "
+            f"{(time.time() - setup_start) * 1000:.1f}ms"
+        )
         logger.debug(f"[{session_id}] gpu_semaphore released after session setup (MPEG)")
 
     infer_params = get_infer_params()
@@ -208,6 +219,7 @@ async def generate_mp4_stream(
 
     try:
         for chunk_idx, human_speech_array in enumerate(human_speech_array_slices):
+            chunk_start = time.time()
             audio_dq.extend(human_speech_array.tolist())
             audio_array = np.array(audio_dq)
             audio_embedding = get_audio_embedding(
@@ -217,6 +229,12 @@ async def generate_mp4_stream(
             async with _session_manager.gpu_semaphore:
                 video_tensor = await loop.run_in_executor(
                     None, run_pipeline_for_session, pipeline, ctx, audio_embedding
+                )
+
+            if chunk_idx == 0:
+                logger.info(
+                    f"[{session_id}] first chunk inference took "
+                    f"{(time.time() - chunk_start) * 1000:.1f}ms"
                 )
 
             frames = video_tensor.cpu()

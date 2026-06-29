@@ -27,6 +27,7 @@ from config import (
     FLASHHEAD_CKPT_DIR,
     WAV2VEC_DIR,
     MODEL_TYPE as DEFAULT_MODEL_TYPE,
+    WARMUP_MODEL_TYPES,
     WORLD_SIZE,
     TEMP_UPLOAD_DIR,
     TEMP_OUTPUT_DIR,
@@ -39,12 +40,12 @@ from config import (
 from avatar_image_cropper import AvatarImageCropper
 from flash_head.inference import (
     get_pipeline,
-    get_base_data,
     get_infer_params,
     get_audio_embedding,
     run_pipeline,
     SessionContext,
     prepare_session_base_data,
+    run_pipeline_for_session,
     capture_pipeline_clean_state,
 )
 from session_manager import ConcurrentSessionManager, CapacityError
@@ -282,50 +283,90 @@ async def lifespan(app: FastAPI):
     _setup_lock = asyncio.Lock()
     logger.info(f"Session manager ready: max_concurrent_streams={MAX_CONCURRENT_STREAMS}")
 
-    # Initialize pipeline at startup
+    # Initialize pipeline(s) at startup
     ckpt_dir = FLASHHEAD_CKPT_DIR
     wav2vec_dir = WAV2VEC_DIR
-    model_type = DEFAULT_MODEL_TYPE
+    logger.info(
+        f"Initializing warmup pipeline(s): ckpt_dir={ckpt_dir}, "
+        f"wav2vec_dir={wav2vec_dir}, model_types={WARMUP_MODEL_TYPES}"
+    )
 
-    logger.info(f"Initializing pipeline: ckpt_dir={ckpt_dir}, wav2vec_dir={wav2vec_dir}, model_type={model_type}")
-    pipeline = init_pipeline(ckpt_dir, wav2vec_dir, model_type)
+    warmup_models = []
+    for model_type in WARMUP_MODEL_TYPES:
+        try:
+            model_type = normalize_model_type(model_type)
+        except ValueError as exc:
+            logger.error(f"Skipping invalid warmup model_type '{model_type}': {exc}")
+            continue
+        warmup_models.append(model_type)
+        init_pipeline(ckpt_dir, wav2vec_dir, model_type)
 
     warmup_start = time.time()
-    log_event("pipeline_warmup_started", model_type=model_type)
+    log_event("pipeline_warmup_started", model_types=warmup_models)
 
     try:
         os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
         dummy_img_path = os.path.join(TEMP_UPLOAD_DIR, "dummy_warmup.jpg")
         if not os.path.exists(dummy_img_path):
-            dummy_img = Image.new('RGB', (256, 256), color='black')
+            dummy_img = Image.new('RGB', (512, 512), color='black')
             dummy_img.save(dummy_img_path)
 
-        with traced_span("pipeline.warmup", model_type=model_type):
-            get_base_data(
-                pipeline,
-                cond_image_path_or_dir=dummy_img_path,
-                base_seed=42,
-                use_face_crop=False
+        for model_type in warmup_models:
+            per_model_start = time.time()
+            log_event("pipeline_warmup_model_started", model_type=model_type)
+            with traced_span("pipeline.warmup", model_type=model_type):
+                pipeline = init_pipeline(ckpt_dir, wav2vec_dir, model_type)
+                ctx = SessionContext(
+                    session_id=f"startup_warmup_{model_type}",
+                    cond_image_path_or_dir=dummy_img_path,
+                    base_seed=42,
+                    use_face_crop=False,
+                    expression_scale=1.0,
+                )
+                prepare_session_base_data(pipeline, ctx)
+
+                infer_params = get_infer_params()
+                sample_rate = infer_params['sample_rate']
+                tgt_fps = infer_params['tgt_fps']
+                frame_num = infer_params['frame_num']
+                cached_audio_duration = infer_params['cached_audio_duration']
+
+                dummy_audio_length = sample_rate * cached_audio_duration
+                dummy_audio = np.zeros(dummy_audio_length, dtype=np.float32)
+
+                audio_end_idx = cached_audio_duration * tgt_fps
+                audio_start_idx = audio_end_idx - frame_num
+                dummy_embedding = get_audio_embedding(pipeline, dummy_audio, audio_start_idx, audio_end_idx)
+                _ = run_pipeline(pipeline, dummy_embedding)
+                _ = run_pipeline_for_session(pipeline, ctx, dummy_embedding)
+
+            per_model_duration = time.time() - per_model_start
+            logger.info(
+                f"Warmup for model_type={model_type} complete in {per_model_duration:.2f}s"
+            )
+            log_event(
+                "pipeline_warmup_model_completed",
+                model_type=model_type,
+                duration_ms=round(per_model_duration * 1000, 2),
+                status="success",
+            )
+            distribution(
+                "soulx.pipeline.warmup.duration_ms",
+                round(per_model_duration * 1000, 2),
+                tags=generation_metric_tags("startup", model_type, status="success"),
             )
 
-            infer_params = get_infer_params()
-            sample_rate = infer_params['sample_rate']
-            tgt_fps = infer_params['tgt_fps']
-            frame_num = infer_params['frame_num']
-            cached_audio_duration = infer_params['cached_audio_duration']
-
-            dummy_audio_length = sample_rate * cached_audio_duration
-            dummy_audio = np.zeros(dummy_audio_length, dtype=np.float32)
-
-            audio_end_idx = cached_audio_duration * tgt_fps
-            audio_start_idx = audio_end_idx - frame_num
-            dummy_embedding = get_audio_embedding(pipeline, dummy_audio, audio_start_idx, audio_end_idx)
-            _ = run_pipeline(pipeline, dummy_embedding)
-
         warmup_duration = time.time() - warmup_start
-        logger.info(f"Warmup complete in {warmup_duration:.2f}s - models compiled and ready!")
-        log_event("pipeline_warmup_completed", model_type=model_type, duration_ms=round(warmup_duration * 1000, 2), status="success")
-        distribution("soulx.pipeline.warmup.duration_ms", round(warmup_duration * 1000, 2), tags=generation_metric_tags("startup", model_type, status="success"))
+        logger.info(
+            f"Warmup complete in {warmup_duration:.2f}s - "
+            f"models={warmup_models} compiled and ready!"
+        )
+        log_event(
+            "pipeline_warmup_completed",
+            model_types=warmup_models,
+            duration_ms=round(warmup_duration * 1000, 2),
+            status="success",
+        )
 
         import observability
         observability.server_started = True
@@ -333,7 +374,7 @@ async def lifespan(app: FastAPI):
 
     except Exception as e:
         logger.error(f"Warmup failed: {e}")
-        log_event("pipeline_warmup_failed", model_type=model_type, error=str(e), status="failure")
+        log_event("pipeline_warmup_failed", model_types=warmup_models, error=str(e), status="failure")
         # Keep server_started = False so health checks fail and ALB doesn't route traffic here
 
     yield
