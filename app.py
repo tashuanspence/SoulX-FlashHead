@@ -1045,15 +1045,25 @@ async def stream_efs(request: StreamEfsRequest, http_request: Request):
     request_suffix = f"{int(time.time() * 1000)}_{uuid.uuid4().hex}"
 
     try:
+        audio_dl_start = time.time()
         temp_audio_path = await download_audio_from_url(request.audio, request_suffix)
+        logger.info(
+            f"[{request_suffix}] stream_efs audio download took "
+            f"{(time.time() - audio_dl_start) * 1000:.1f}ms"
+        )
     except HTTPException as exc:
         return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
 
+    avatar_start = time.time()
     resolved_driving_path = await _resolve_driving_image_path(
         request_suffix, None, request.avatar_id, args.use_face_crop, args.preserve_aspect_ratio
     )
     if isinstance(resolved_driving_path, JSONResponse):
         return resolved_driving_path
+    logger.info(
+        f"[{request_suffix}] stream_efs avatar resolve took "
+        f"{(time.time() - avatar_start) * 1000:.1f}ms"
+    )
 
     if args.preserve_aspect_ratio:
         logger.debug(
@@ -1062,7 +1072,12 @@ async def stream_efs(request: StreamEfsRequest, http_request: Request):
             f"resolved_driving_path={resolved_driving_path}"
         )
 
+    pipeline_init_start = time.time()
     init_pipeline(FLASHHEAD_CKPT_DIR, WAV2VEC_DIR, model_type)
+    logger.info(
+        f"[{request_suffix}] stream_efs pipeline init took "
+        f"{(time.time() - pipeline_init_start) * 1000:.1f}ms"
+    )
     infer_params = get_infer_params()
     target_fps = infer_params["tgt_fps"]
     fragment_duration_ms = args.fragment_duration_ms if args.fragment_duration_ms is not None else (FRAGMENT_DURATION_US // 1000)
