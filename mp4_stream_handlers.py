@@ -64,6 +64,7 @@ async def generate_mp4_stream(
     tags = generation_metric_tags("mpeg_stream", model_type, endpoint="generate-mpeg-stream")
 
     session_id = request_id or f"mpeg_{uuid.uuid4().hex[:8]}"
+    stream_start = time.time()
 
     init_start = time.time()
     pipeline = init_pipeline(FLASHHEAD_CKPT_DIR, WAV2VEC_DIR, model_type)
@@ -81,6 +82,7 @@ async def generate_mp4_stream(
     )
 
     # Prepare background for aspect ratio preservation if needed
+    background_start = time.time()
     background_data = None
     if should_composite(driving_image_path, preserve_aspect_ratio):
         background_data = prepare_background(driving_image_path)
@@ -89,6 +91,10 @@ async def generate_mp4_stream(
                 f"[{session_id}] Aspect ratio preservation enabled: "
                 f"output will be {background_data[3]}x{background_data[4]}"
             )
+    logger.info(
+        f"[{session_id}] background/aspect setup took "
+        f"{(time.time() - background_start) * 1000:.1f}ms"
+    )
 
     loop = asyncio.get_event_loop()
     # IMPORTANT: use gpu_semaphore (not _setup_lock) so prepare_params() and
@@ -139,6 +145,7 @@ async def generate_mp4_stream(
     motion_frames_num = infer_params["motion_frames_num"]
     slice_len = frame_num - motion_frames_num
 
+    audio_load_start = time.time()
     import soundfile as sf
     human_speech_array_all, sr_native = sf.read(audio_path, dtype="float32")
     if sr_native != sample_rate:
@@ -146,6 +153,11 @@ async def generate_mp4_stream(
         human_speech_array_all = librosa.resample(human_speech_array_all, orig_sr=sr_native, target_sr=sample_rate)
     if len(human_speech_array_all.shape) > 1:
         human_speech_array_all = human_speech_array_all.mean(axis=1)
+    logger.info(
+        f"[{session_id}] audio load/resample took "
+        f"{(time.time() - audio_load_start) * 1000:.1f}ms "
+        f"sr_native={sr_native} target_sr={sample_rate} samples={len(human_speech_array_all)}"
+    )
 
     if silence_padding_sec > 0:
         silence_samples = int(silence_padding_sec * sample_rate)
@@ -190,8 +202,13 @@ async def generate_mp4_stream(
             fragment_duration_us=fragment_duration_us,
             audio_start_offset=silence_padding_sec,
         )
+    encoder_start_time = time.time()
     with traced_span("mpeg.encoder.start", session_id=session_id, fragment_duration_us=fragment_duration_us):
         encoder.start()
+    logger.info(
+        f"[{session_id}] encoder.start took "
+        f"{(time.time() - encoder_start_time) * 1000:.1f}ms"
+    )
 
     async def _drain_encoder(first_timeout: float = 0.01):
         """
@@ -222,9 +239,15 @@ async def generate_mp4_stream(
             chunk_start = time.time()
             audio_dq.extend(human_speech_array.tolist())
             audio_array = np.array(audio_dq)
+            embedding_start = time.time()
             audio_embedding = get_audio_embedding(
                 pipeline, audio_array, audio_start_idx, audio_end_idx
             )
+            if chunk_idx == 0:
+                logger.info(
+                    f"[{session_id}] first chunk audio embedding took "
+                    f"{(time.time() - embedding_start) * 1000:.1f}ms"
+                )
 
             async with _session_manager.gpu_semaphore:
                 video_tensor = await loop.run_in_executor(
@@ -233,27 +256,48 @@ async def generate_mp4_stream(
 
             if chunk_idx == 0:
                 logger.info(
-                    f"[{session_id}] first chunk inference took "
+                    f"[{session_id}] first chunk inference+embedding took "
                     f"{(time.time() - chunk_start) * 1000:.1f}ms"
                 )
 
+            cpu_copy_start = time.time()
             frames = video_tensor.cpu()
+            if chunk_idx == 0:
+                logger.info(
+                    f"[{session_id}] first chunk cpu copy took "
+                    f"{(time.time() - cpu_copy_start) * 1000:.1f}ms"
+                )
             # Skip the first motion_frames_num warm-up frames on chunk 0.
             # Those frames are driven by zero audio context (silence) and would
             # shift the video lip-sync forward relative to the audio track,
             # causing perceived audio delay of motion_frames_num/fps seconds.
             # Subsequent chunks already drop them via (frames.shape[0] - slice_len).
             start_idx = motion_frames_num if chunk_idx == 0 else (frames.shape[0] - slice_len)
+            add_frames_start = time.time()
             for i in range(start_idx, frames.shape[0]):
                 frame_np = frames[i].numpy().astype(np.uint8)
                 encoder.add_frame(frame_np)
+            if chunk_idx == 0:
+                logger.info(
+                    f"[{session_id}] first chunk frame enqueue took "
+                    f"{(time.time() - add_frames_start) * 1000:.1f}ms frames={frames.shape[0] - start_idx}"
+                )
 
             # Use a longer timeout (0.5s) on the very first chunk to guarantee
             # the initial frames are encoded and flushed immediately to the client
             # (maintaining ultra-low TTFF), while keeping a tiny non-blocking
             # timeout (0.01s) on subsequent chunks for high-throughput pipeline.
             timeout = 0.5 if chunk_idx == 0 else 0.01
+            drain_start = time.time()
+            first_yielded = False
             async for mp4_chunk in _drain_encoder(first_timeout=timeout):
+                if chunk_idx == 0 and not first_yielded:
+                    first_yielded = True
+                    logger.info(
+                        f"[{session_id}] first MP4 chunk ready after "
+                        f"{(time.time() - stream_start) * 1000:.1f}ms "
+                        f"drain_wait={(time.time() - drain_start) * 1000:.1f}ms"
+                    )
                 yield mp4_chunk
 
         # Process remainder

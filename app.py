@@ -340,6 +340,37 @@ async def lifespan(app: FastAPI):
                 _ = run_pipeline(pipeline, dummy_embedding)
                 _ = run_pipeline_for_session(pipeline, ctx, dummy_embedding)
 
+                dummy_audio_path = os.path.join(TEMP_UPLOAD_DIR, "dummy_warmup.wav")
+                if not os.path.exists(dummy_audio_path):
+                    import wave
+                    with wave.open(dummy_audio_path, "wb") as wav_file:
+                        wav_file.setnchannels(1)
+                        wav_file.setsampwidth(2)
+                        wav_file.setframerate(sample_rate)
+                        wav_file.writeframes(np.zeros(sample_rate // 2, dtype=np.int16).tobytes())
+
+                from mp4_stream_encoder import Mp4StreamEncoder
+                encoder_start = time.time()
+                encoder = Mp4StreamEncoder(
+                    width=512,
+                    height=512,
+                    fps=tgt_fps,
+                    audio_path=dummy_audio_path,
+                    job_id=f"startup_encoder_warmup_{model_type}",
+                    fragment_duration_us=FRAGMENT_DURATION_US,
+                )
+                encoder.start()
+                black_frame = np.zeros((512, 512, 3), dtype=np.uint8)
+                for _ in range(max(1, int(tgt_fps // 2))):
+                    encoder.add_frame(black_frame)
+                encoder.finish()
+                while encoder.get_chunk(timeout=0.1) is not None:
+                    pass
+                logger.info(
+                    f"Warmup fMP4 encoder for model_type={model_type} complete in "
+                    f"{(time.time() - encoder_start):.2f}s"
+                )
+
             per_model_duration = time.time() - per_model_start
             logger.info(
                 f"Warmup for model_type={model_type} complete in {per_model_duration:.2f}s"
