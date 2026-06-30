@@ -1824,21 +1824,6 @@ async def stream_status():
                 "Access-Control-Allow-Headers": "*",
             },
         )
-    if _session_manager.active_count() > 0:
-        return JSONResponse(
-            {
-                "error": "Status endpoint temporarily disabled during active streaming",
-                "active_streams": _session_manager.active_count(),
-            },
-            status_code=503,
-            headers={
-                "Retry-After": "1",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Credentials": "true",
-                "Access-Control-Allow-Methods": "*",
-                "Access-Control-Allow-Headers": "*",
-            },
-        )
     return _session_manager.get_status()
 
 @app.get("/api/compositor/stats", summary="Get aspect ratio compositor cache statistics")
