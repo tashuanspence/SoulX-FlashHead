@@ -247,8 +247,9 @@ async def generate_mp4_stream(
             audio_dq.extend(human_speech_array.tolist())
             audio_array = np.array(audio_dq)
             embedding_start = time.time()
-            audio_embedding = get_audio_embedding(
-                pipeline, audio_array, audio_start_idx, audio_end_idx
+            audio_embedding = await loop.run_in_executor(
+                None, get_audio_embedding,
+                pipeline, audio_array, audio_start_idx, audio_end_idx,
             )
             if chunk_idx == 0:
                 logger.info(
@@ -323,8 +324,9 @@ async def generate_mp4_stream(
             dynamic_audio_end_idx = audio_end_idx - padding_frames
             dynamic_audio_start_idx = dynamic_audio_end_idx - frame_num
 
-            audio_embedding = get_audio_embedding(
-                pipeline, audio_array, dynamic_audio_start_idx, dynamic_audio_end_idx
+            audio_embedding = await loop.run_in_executor(
+                None, get_audio_embedding,
+                pipeline, audio_array, dynamic_audio_start_idx, dynamic_audio_end_idx,
             )
 
             async with _session_manager.gpu_semaphore:
