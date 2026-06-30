@@ -60,3 +60,7 @@ SOULX_DISABLE_AVATAR_CROP_CACHE: bool = _env_flag("SOULX_DISABLE_AVATAR_CROP_CAC
 # 250ms balances real-time performance with encoding efficiency for VMs.
 _frag_duration_ms: int = int(os.environ.get("FRAGMENT_DURATION_MS", 100))
 FRAGMENT_DURATION_US: int = _frag_duration_ms * 1000
+
+# Default encoder quality settings (overridable per-request)
+SOULX_ENCODER_CRF: int = int(os.environ.get("SOULX_ENCODER_CRF", 20))
+SOULX_ENCODER_PRESET: str = os.environ.get("SOULX_ENCODER_PRESET", "veryfast")

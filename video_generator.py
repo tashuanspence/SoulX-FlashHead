@@ -15,7 +15,7 @@ from flash_head.inference import (
     run_pipeline_for_session,
     SessionContext,
 )
-from image_compositor import prepare_background, should_composite, composite_frame
+from image_compositor import prepare_background, should_composite, composite_frame, scale_frame
 
 
 async def generate_mp4(
@@ -27,6 +27,9 @@ async def generate_mp4(
     use_face_crop: bool = False,
     silence_padding_sec: float = 0.0,
     preserve_aspect_ratio: bool = False,
+    output_scale: int = 1,
+    encoder_crf: int = 20,
+    encoder_preset: str = "veryfast",
     request_id: str = None,
     expression_scale: float = 1.0,
 ) -> str:
@@ -42,7 +45,7 @@ async def generate_mp4(
     # Prepare background for aspect ratio preservation if needed
     background_data = None
     if should_composite(driving_image_path, preserve_aspect_ratio):
-        background_data = prepare_background(driving_image_path)
+        background_data = prepare_background(driving_image_path, model_output_size=512 * output_scale)
         if background_data:
             logger.info(
                 f"[{session_id}] Aspect ratio preservation enabled: "
@@ -167,10 +170,16 @@ async def generate_mp4(
             generated_list, output_path, audio_path, tgt_fps,
             background=bg_array, x_offset=x_offset, y_offset=y_offset,
             audio_start_offset=silence_padding_sec,
+            output_scale=output_scale,
+            encoder_crf=encoder_crf,
+            encoder_preset=encoder_preset,
         )
     else:
         _save_video(generated_list, output_path, audio_path, tgt_fps,
-                    audio_start_offset=silence_padding_sec)
+                    audio_start_offset=silence_padding_sec,
+                    output_scale=output_scale,
+                    encoder_crf=encoder_crf,
+                    encoder_preset=encoder_preset)
 
     elapsed = time.time() - start_wall
     logger.info(f"[{session_id}] MP4 saved to {output_path} in {elapsed:.2f}s")
@@ -186,6 +195,9 @@ def _save_video(
     x_offset: int = 0,
     y_offset: int = 0,
     audio_start_offset: float = 0.0,
+    output_scale: int = 1,
+    encoder_crf: int = 20,
+    encoder_preset: str = "veryfast",
 ):
     """Write frames to a temp video file, then mux with original audio via ffmpeg."""
     temp_video_path = video_path.replace(".mp4", "_tmp.mp4")
@@ -199,12 +211,12 @@ def _save_video(
         mode="I",
         fps=fps,
         codec="h264",
-        ffmpeg_params=["-bf", "0"],
+        ffmpeg_params=["-bf", "0", "-crf", str(encoder_crf), "-preset", encoder_preset],
     ) as writer:
         for frames in frames_list:
             frames_np = frames.numpy().astype(np.uint8)
             for i in range(frames_np.shape[0]):
-                frame = frames_np[i]
+                frame = scale_frame(frames_np[i], output_scale)
                 if background is not None:
                     # Composite frame onto background
                     frame = composite_frame(

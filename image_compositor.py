@@ -28,7 +28,8 @@ SQUARE_TOLERANCE = 0.05  # 5%
 
 @lru_cache(maxsize=50)
 def _prepare_background_cached(
-    image_path: str, mtime_ns: int, file_size: int, preserve_aspect_ratio: bool
+    image_path: str, mtime_ns: int, file_size: int, preserve_aspect_ratio: bool,
+    model_output_size: int = 512,
 ) -> Tuple[np.ndarray, int, int, int, int]:
     """
     Internal cached function for background preparation.
@@ -38,7 +39,8 @@ def _prepare_background_cached(
         mtime_ns: File modification time in nanoseconds (for cache invalidation)
         file_size: File size in bytes (for cache invalidation)
         preserve_aspect_ratio: Whether to preserve aspect ratio
-        
+        model_output_size: Side length of the square model output frame (512 * output_scale)
+
     Returns:
         Tuple of (background_array, x_offset, y_offset, output_width, output_height)
     """
@@ -47,7 +49,7 @@ def _prepare_background_cached(
     
     logger.info(
         f"[image_compositor] Cache miss - preparing background for {image_path} "
-        f"(mtime_ns={mtime_ns}, size={file_size})"
+        f"(mtime_ns={mtime_ns}, size={file_size}, model_output_size={model_output_size})"
     )
     
     # Load the original image
@@ -58,13 +60,13 @@ def _prepare_background_cached(
     aspect_ratio = orig_w / orig_h
     
     if aspect_ratio > 1.0:
-        # Landscape: scale to height=512
-        target_h = 512
-        target_w = int(orig_w * (512 / orig_h))
+        # Landscape: scale so height matches model output size
+        target_h = model_output_size
+        target_w = int(orig_w * (model_output_size / orig_h))
     else:
-        # Portrait or square: scale to width=512
-        target_w = 512
-        target_h = int(orig_h * (512 / orig_w))
+        # Portrait or square: scale so width matches model output size
+        target_w = model_output_size
+        target_h = int(orig_h * (model_output_size / orig_w))
     
     # Resize the image
     img_resized = img.resize((target_w, target_h), Image.LANCZOS)
@@ -72,13 +74,13 @@ def _prepare_background_cached(
     # Convert to numpy array
     background_array = np.array(img_resized, dtype=np.uint8)
     
-    # Calculate offsets for center placement of 512x512 generated frames
-    x_offset = (target_w - 512) // 2 if target_w > 512 else 0
-    y_offset = (target_h - 512) // 2 if target_h > 512 else 0
-    
+    # Calculate offsets for center placement of the model output frame
+    x_offset = (target_w - model_output_size) // 2 if target_w > model_output_size else 0
+    y_offset = (target_h - model_output_size) // 2 if target_h > model_output_size else 0
+
     logger.info(
         f"[image_compositor] Background prepared: {orig_w}x{orig_h} → {target_w}x{target_h}, "
-        f"offsets=({x_offset}, {y_offset})"
+        f"offsets=({x_offset}, {y_offset}), model_output_size={model_output_size}"
     )
     
     return background_array, x_offset, y_offset, target_w, target_h
@@ -86,13 +88,15 @@ def _prepare_background_cached(
 
 def prepare_background(
     image_path: str,
+    model_output_size: int = 512,
 ) -> Optional[Tuple[np.ndarray, int, int, int, int]]:
     """
     Prepare background for aspect ratio preservation with LRU caching.
     
     Args:
         image_path: Path to the driving image
-        
+        model_output_size: Side length of the square model output frame (512 * output_scale)
+
     Returns:
         Tuple of (background_array, x_offset, y_offset, output_width, output_height)
         or None if compositing is not needed
@@ -109,7 +113,7 @@ def prepare_background(
             f"preparing uncached background for {image_path}"
         )
         stat_result = os.stat(image_path)
-        return _prepare_background_direct(image_path, stat_result)
+        return _prepare_background_direct(image_path, stat_result, model_output_size)
     
     stat_result = os.stat(image_path)
     mtime_ns = stat_result.st_mtime_ns
@@ -120,9 +124,9 @@ def prepare_background(
     
     logger.debug(
         f"[image_compositor] Preparing background with cache key: "
-        f"path={image_path}, mtime_ns={mtime_ns}, size={file_size}"
+        f"path={image_path}, mtime_ns={mtime_ns}, size={file_size}, model_output_size={model_output_size}"
     )
-    result = _prepare_background_cached(image_path, mtime_ns, file_size, True)
+    result = _prepare_background_cached(image_path, mtime_ns, file_size, True, model_output_size)
     
     # Track cache hits
     cache_info_after = _prepare_background_cached.cache_info()
@@ -136,6 +140,7 @@ def prepare_background(
 def _prepare_background_direct(
     image_path: str,
     stat_result: os.stat_result,
+    model_output_size: int = 512,
 ) -> Tuple[np.ndarray, int, int, int, int]:
     """Prepare a background without using the LRU cache."""
     global _cache_misses
@@ -143,7 +148,7 @@ def _prepare_background_direct(
 
     logger.info(
         f"[image_compositor] Cache bypass - preparing background for {image_path} "
-        f"(mtime_ns={stat_result.st_mtime_ns}, size={stat_result.st_size})"
+        f"(mtime_ns={stat_result.st_mtime_ns}, size={stat_result.st_size}, model_output_size={model_output_size})"
     )
 
     img = Image.open(image_path).convert("RGB")
@@ -151,21 +156,21 @@ def _prepare_background_direct(
     aspect_ratio = orig_w / orig_h
 
     if aspect_ratio > 1.0:
-        target_h = 512
-        target_w = int(orig_w * (512 / orig_h))
+        target_h = model_output_size
+        target_w = int(orig_w * (model_output_size / orig_h))
     else:
-        target_w = 512
-        target_h = int(orig_h * (512 / orig_w))
+        target_w = model_output_size
+        target_h = int(orig_h * (model_output_size / orig_w))
 
     img_resized = img.resize((target_w, target_h), Image.LANCZOS)
     background_array = np.array(img_resized, dtype=np.uint8)
 
-    x_offset = (target_w - 512) // 2 if target_w > 512 else 0
-    y_offset = (target_h - 512) // 2 if target_h > 512 else 0
+    x_offset = (target_w - model_output_size) // 2 if target_w > model_output_size else 0
+    y_offset = (target_h - model_output_size) // 2 if target_h > model_output_size else 0
 
     logger.info(
         f"[image_compositor] Background prepared without cache: {orig_w}x{orig_h} → {target_w}x{target_h}, "
-        f"offsets=({x_offset}, {y_offset})"
+        f"offsets=({x_offset}, {y_offset}), model_output_size={model_output_size}"
     )
 
     return background_array, x_offset, y_offset, target_w, target_h
@@ -212,17 +217,17 @@ def composite_frame(
     output_buffer: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
-    Composite a 512x512 generated frame onto the background.
-    
+    Composite a generated frame onto the background.
+
     Args:
-        frame: Generated frame (512x512x3)
-        background: Background array (WxHx3)
+        frame: Generated frame (HxWx3) — any square size
+        background: Background array (HxWx3)
         x_offset: X offset for frame placement
         y_offset: Y offset for frame placement
         output_buffer: Pre-allocated output buffer (optional, for performance)
-        
+
     Returns:
-        Composited frame (WxHx3)
+        Composited frame (HxWx3)
     """
     if output_buffer is None:
         output_buffer = np.empty_like(background)
@@ -230,10 +235,31 @@ def composite_frame(
     # Copy background into output buffer
     np.copyto(output_buffer, background)
     
-    # Paste the 512x512 frame at the center position
-    output_buffer[y_offset : y_offset + 512, x_offset : x_offset + 512] = frame
+    # Paste the frame at the center position using its actual dimensions
+    fh, fw = frame.shape[:2]
+    output_buffer[y_offset : y_offset + fh, x_offset : x_offset + fw] = frame
     
     return output_buffer
+
+
+def scale_frame(frame: np.ndarray, output_scale: int) -> np.ndarray:
+    """
+    Upscale a frame by output_scale using Lanczos interpolation.
+
+    Args:
+        frame: Input frame (HxWx3)
+        output_scale: Integer multiplier (1=no-op, 2=2x, etc.)
+
+    Returns:
+        Upscaled frame as uint8 numpy array
+    """
+    if output_scale == 1:
+        return frame
+    h, w = frame.shape[:2]
+    return np.array(
+        Image.fromarray(frame).resize((w * output_scale, h * output_scale), Image.LANCZOS),
+        dtype=np.uint8,
+    )
 
 
 def get_cache_stats() -> dict:

@@ -8,12 +8,13 @@ import threading
 from typing import Optional
 import numpy as np
 from loguru import logger
+from config import SOULX_ENCODER_PRESET, SOULX_ENCODER_CRF
 from image_compositor import composite_frame
 
 
 class Mp4StreamEncoder:
     def __init__(self, width, height, fps, audio_path, job_id,
-                 crf=23, preset="ultrafast", fragment_duration_us=200_000,
+                 crf=None, preset=None, fragment_duration_us=200_000,
                  background: Optional[np.ndarray] = None,
                  x_offset: int = 0,
                  y_offset: int = 0,
@@ -23,8 +24,8 @@ class Mp4StreamEncoder:
         self.fps = fps
         self.audio_path = audio_path
         self.job_id = job_id
-        self.crf = crf
-        self.preset = preset
+        self.crf = crf if crf is not None else SOULX_ENCODER_CRF
+        self.preset = preset if preset is not None else SOULX_ENCODER_PRESET
         self.fragment_duration_us = fragment_duration_us
         self.background = background
         self.x_offset = x_offset

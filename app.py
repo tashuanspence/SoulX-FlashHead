@@ -492,6 +492,10 @@ class GenerateArgs(BaseModel):
     fragment_duration_ms: int | None = None
     preserve_aspect_ratio: bool = False
     expression_scale: float = 1.0
+    output_scale: int = 1
+    encoder_crf: int = 20
+    encoder_preset: str = "veryfast"
+    jpeg_quality: int = 85
 
     @model_validator(mode='after')
     def validate_mutually_exclusive_flags(self):
@@ -504,6 +508,11 @@ class GenerateArgs(BaseModel):
         if not EXPRESSION_SCALE_MIN <= self.expression_scale <= EXPRESSION_SCALE_MAX:
             raise ValueError(f"expression_scale must be between {EXPRESSION_SCALE_MIN} and {EXPRESSION_SCALE_MAX}")
         return self
+
+
+def _model_output_side() -> int:
+    infer_params = get_infer_params()
+    return int(infer_params.get("height", 512))
 
 
 class StreamEfsRequest(BaseModel):
@@ -520,6 +529,14 @@ def _parse_args(args_str: str) -> GenerateArgs:
         return GenerateArgs()
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _resolve_generation_args(args: GenerateArgs) -> GenerateArgs:
+    args.output_scale = _validate_output_scale(args.output_scale)
+    args.encoder_preset = _validate_encoder_preset(args.encoder_preset)
+    args.encoder_crf = _validate_encoder_crf(args.encoder_crf)
+    args.jpeg_quality = _validate_jpeg_quality(args.jpeg_quality)
+    return args
 
 
 app = FastAPI(
@@ -585,6 +602,39 @@ def tensor_to_jpeg_bytes(tensor_frame):
     
     buf = io.BytesIO()
     img.save(buf, format='JPEG', quality=85)
+    return buf.getvalue()
+
+
+def _validate_output_scale(output_scale: int) -> int:
+    if not isinstance(output_scale, int) or output_scale < 1 or output_scale > 4:
+        raise ValueError("output_scale must be an integer from 1 to 4")
+    return output_scale
+
+
+def _validate_encoder_preset(preset: str) -> str:
+    allowed = {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium"}
+    normalized = (preset or "veryfast").strip().lower()
+    if normalized not in allowed:
+        raise ValueError(f"encoder_preset must be one of: {sorted(allowed)}")
+    return normalized
+
+
+def _validate_encoder_crf(crf: int) -> int:
+    if not isinstance(crf, int) or crf < 0 or crf > 51:
+        raise ValueError("encoder_crf must be an integer from 0 to 51")
+    return crf
+
+
+def _validate_jpeg_quality(quality: int) -> int:
+    if not isinstance(quality, int) or quality < 1 or quality > 95:
+        raise ValueError("jpeg_quality must be an integer from 1 to 95")
+    return quality
+
+
+def _encode_jpeg(frame_np: np.ndarray, quality: int) -> bytes:
+    img = Image.fromarray(frame_np.astype(np.uint8))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality)
     return buf.getvalue()
 
 def _validate_audio_inputs(audio: UploadFile | None, audio_url: str | None):
@@ -928,7 +978,8 @@ async def generate_mpeg_stream(
         if avatar_id:
             return JSONResponse(status_code=400, content={"error": message})
         if "dimensions" in message:
-            return JSONResponse(status_code=400, content={"error": message.replace("Driving images must be exactly 512x512px.", "Must be 512x512px.")})
+            model_side = _model_output_side()
+            return JSONResponse(status_code=400, content={"error": message.replace(f"Driving images must be exactly {model_side}x{model_side}px.", f"Must be {model_side}x{model_side}px.")})
         if message.startswith("Invalid image format:"):
             return JSONResponse(status_code=400, content={"error": message.replace("Invalid image format: ", "Invalid image: ").replace(". Please upload a valid image file.", "")})
         return JSONResponse(status_code=400, content={"error": message})
@@ -984,6 +1035,9 @@ async def generate_mpeg_stream(
                 use_face_crop,
                 model_type,
                 silence_padding_sec,
+                output_scale=1,
+                encoder_crf=20,
+                encoder_preset="veryfast",
                 fragment_duration_us=frag_us,
                 request_id=request_suffix,
                 preserve_aspect_ratio=preserve_aspect_ratio,
@@ -1053,7 +1107,7 @@ async def stream_efs(request: StreamEfsRequest, http_request: Request):
             },
         )
 
-    args = _parse_args(request.args)
+    args = _resolve_generation_args(_parse_args(request.args))
 
     try:
         model_type = normalize_model_type(args.model_type)
@@ -1138,6 +1192,9 @@ async def stream_efs(request: StreamEfsRequest, http_request: Request):
                 args.use_face_crop,
                 model_type,
                 args.silence_padding_sec,
+                output_scale=args.output_scale,
+                encoder_crf=args.encoder_crf,
+                encoder_preset=args.encoder_preset,
                 fragment_duration_us=fragment_duration_us,
                 request_id=request_suffix,
                 preserve_aspect_ratio=args.preserve_aspect_ratio,
@@ -1408,6 +1465,9 @@ async def generate_video(
                 use_face_crop=use_face_crop,
                 silence_padding_sec=silence_padding_sec,
                 preserve_aspect_ratio=preserve_aspect_ratio,
+                output_scale=1,
+                encoder_crf=20,
+                encoder_preset="veryfast",
                 request_id=request_suffix,
                 expression_scale=expression_scale,
             )
@@ -1831,12 +1891,13 @@ async def websocket_stream(websocket: WebSocket):
                 try:
                     img = Image.open(io.BytesIO(driving_image_bytes))
                     width, height = img.size
-                    if width != 512 or height != 512:
+                    model_side = _model_output_side()
+                    if width != model_side or height != model_side:
                         await _send({
                             'type': 'error',
                             'message': (
                                 f'Invalid image dimensions: {width}x{height}px. '
-                                'Driving images must be exactly 512x512px.'
+                                f'Driving images must be exactly {model_side}x{model_side}px.'
                             )
                         })
                         continue
@@ -1856,6 +1917,7 @@ async def websocket_stream(websocket: WebSocket):
                 model_type = normalize_model_type(message.get('model_type', 'lite'))
                 base_seed = message.get('base_seed', 42)
                 use_face_crop = message.get('use_face_crop', False)
+                jpeg_quality = _validate_jpeg_quality(message.get('jpeg_quality', 85))
 
                 pipeline = init_pipeline(FLASHHEAD_CKPT_DIR, WAV2VEC_DIR, model_type)
 
@@ -1894,7 +1956,9 @@ async def websocket_stream(websocket: WebSocket):
 
                 async def frame_generator():
                     async def on_frame(frame_tensor, frame_index):
-                        jpeg_base64 = tensor_to_jpeg_base64(frame_tensor)
+                        jpeg_base64 = base64.b64encode(
+                            _encode_jpeg(frame_tensor.numpy().astype(np.uint8), jpeg_quality)
+                        ).decode("utf-8")
                         await _send({
                             'type': 'frame',
                             'jpeg_base64': jpeg_base64,
@@ -1930,7 +1994,9 @@ async def websocket_stream(websocket: WebSocket):
 
                 if session:
                     async def on_final_frame_turn(frame_tensor, frame_index):
-                        jpeg_base64 = tensor_to_jpeg_base64(frame_tensor)
+                        jpeg_base64 = base64.b64encode(
+                            _encode_jpeg(frame_tensor.numpy().astype(np.uint8), jpeg_quality)
+                        ).decode("utf-8")
                         await _send({
                             'type': 'frame',
                             'jpeg_base64': jpeg_base64,
@@ -1955,7 +2021,9 @@ async def websocket_stream(websocket: WebSocket):
                             pass
 
                     async def on_final_frame_end(frame_tensor, frame_index):
-                        jpeg_base64 = tensor_to_jpeg_base64(frame_tensor)
+                        jpeg_base64 = base64.b64encode(
+                            _encode_jpeg(frame_tensor.numpy().astype(np.uint8), jpeg_quality)
+                        ).decode("utf-8")
                         await _send({
                             'type': 'frame',
                             'jpeg_base64': jpeg_base64,

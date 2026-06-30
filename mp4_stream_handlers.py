@@ -14,7 +14,7 @@ from loguru import logger
 from config import FRAGMENT_DURATION_US
 from metrics import distribution, generation_metric_tags, increment
 from mp4_stream_encoder import Mp4StreamEncoder
-from image_compositor import prepare_background, should_composite
+from image_compositor import prepare_background, should_composite, scale_frame
 
 
 async def generate_mp4_stream(
@@ -24,6 +24,9 @@ async def generate_mp4_stream(
     use_face_crop: bool,
     model_type: str,
     silence_padding_sec: float,
+    output_scale: int = 1,
+    encoder_crf: int = 20,
+    encoder_preset: str = "veryfast",
     fragment_duration_us: int = FRAGMENT_DURATION_US,
     request_id: Optional[str] = None,
     preserve_aspect_ratio: bool = False,
@@ -85,7 +88,7 @@ async def generate_mp4_stream(
     background_start = time.time()
     background_data = None
     if should_composite(driving_image_path, preserve_aspect_ratio):
-        background_data = prepare_background(driving_image_path)
+        background_data = prepare_background(driving_image_path, model_output_size=512 * output_scale)
         if background_data:
             logger.info(
                 f"[{session_id}] Aspect ratio preservation enabled: "
@@ -186,6 +189,8 @@ async def generate_mp4_stream(
             fps=tgt_fps,
             audio_path=audio_path,
             job_id=session_id,
+            crf=encoder_crf,
+            preset=encoder_preset,
             fragment_duration_us=fragment_duration_us,
             background=bg_array,
             x_offset=x_offset,
@@ -194,11 +199,13 @@ async def generate_mp4_stream(
         )
     else:
         encoder = Mp4StreamEncoder(
-            width=512,
-            height=512,
+            width=512 * output_scale,
+            height=512 * output_scale,
             fps=tgt_fps,
             audio_path=audio_path,
             job_id=session_id,
+            crf=encoder_crf,
+            preset=encoder_preset,
             fragment_duration_us=fragment_duration_us,
             audio_start_offset=silence_padding_sec,
         )
@@ -275,7 +282,7 @@ async def generate_mp4_stream(
             start_idx = motion_frames_num if chunk_idx == 0 else (frames.shape[0] - slice_len)
             add_frames_start = time.time()
             for i in range(start_idx, frames.shape[0]):
-                frame_np = frames[i].numpy().astype(np.uint8)
+                frame_np = scale_frame(frames[i].numpy().astype(np.uint8), output_scale)
                 encoder.add_frame(frame_np)
             if chunk_idx == 0:
                 logger.info(
@@ -327,7 +334,7 @@ async def generate_mp4_stream(
 
             frames = video_tensor.cpu()
             for i in range(frames.shape[0] - remainder_frames, frames.shape[0]):
-                frame_np = frames[i].numpy().astype(np.uint8)
+                frame_np = scale_frame(frames[i].numpy().astype(np.uint8), output_scale)
                 encoder.add_frame(frame_np)
 
             async for mp4_chunk in _drain_encoder(first_timeout=0.01):
