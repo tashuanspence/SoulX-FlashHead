@@ -117,11 +117,10 @@ async def generate_mp4_stream(
 
     infer_params = get_infer_params()
 
-    # Early capacity check to avoid race conditions
-    if _session_manager.is_at_capacity():
+    # Early capacity check for unreserved callers only. Reserved callers already
+    # hold a slot and must be allowed to convert it into a real session.
+    if not slot_reserved and _session_manager.is_at_capacity():
         logger.warning(f"[{session_id}] Capacity full before session creation — rejecting MPEG stream")
-        if slot_reserved:
-            _session_manager.release_slot()
         return
 
     session_created = False
@@ -131,10 +130,9 @@ async def generate_mp4_stream(
             pipeline=pipeline,
             ctx=ctx,
             infer_params=infer_params,
+            reserved_slot=slot_reserved,
         )
         session_created = True
-        if slot_reserved:
-            _session_manager.release_slot()
     except CapacityError:
         logger.warning(f"[{session_id}] Capacity full — rejecting MPEG stream")
         if slot_reserved:

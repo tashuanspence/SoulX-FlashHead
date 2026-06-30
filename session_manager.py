@@ -83,6 +83,7 @@ class ConcurrentSessionManager:
         pipeline,
         ctx,            # inference.SessionContext
         infer_params: dict,
+        reserved_slot: bool = False,
     ):
         """
         Create and register a new StreamingSession.
@@ -91,7 +92,8 @@ class ConcurrentSessionManager:
         """
         from streaming_session import StreamingSession
 
-        if self.is_at_capacity():
+        reservation_credit = 1 if reserved_slot and self._reservations > 0 else 0
+        if self.active_count() - reservation_credit >= self.max_streams:
             try:
                 from app import log_event
                 log_event("capacity_rejected", session_id=session_id, active_streams=self.active_count(), capacity=self.max_streams)
@@ -102,6 +104,9 @@ class ConcurrentSessionManager:
                 f"Server is at capacity ({self.max_streams} concurrent streams). "
                 "Please try again later."
             )
+
+        if reservation_credit:
+            self._reservations -= 1
 
         session = StreamingSession(
             session_id=session_id,
