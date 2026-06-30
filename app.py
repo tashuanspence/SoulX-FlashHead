@@ -340,6 +340,25 @@ async def lifespan(app: FastAPI):
                 _ = run_pipeline(pipeline, dummy_embedding)
                 _ = run_pipeline_for_session(pipeline, ctx, dummy_embedding)
 
+                # Warm up librosa MP3 decode path to avoid 14s cold-start on first request
+                librosa_warmup_start = time.time()
+                try:
+                    import librosa as _librosa
+                    dummy_mp3_path = os.path.join(TEMP_UPLOAD_DIR, "dummy_warmup.mp3")
+                    if not os.path.exists(dummy_mp3_path):
+                        import subprocess as _sp
+                        _sp.run([
+                            "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+                            "-t", "0.5", "-codec:a", "libmp3lame", "-q:a", "9", dummy_mp3_path
+                        ], check=True, capture_output=True)
+                    _librosa.load(dummy_mp3_path, sr=16000)
+                    logger.info(
+                        f"Warmup librosa MP3 decode complete in "
+                        f"{(time.time() - librosa_warmup_start):.2f}s"
+                    )
+                except Exception as _e:
+                    logger.warning(f"Warmup librosa MP3 decode skipped: {_e}")
+
                 dummy_audio_path = os.path.join(TEMP_UPLOAD_DIR, "dummy_warmup.wav")
                 if not os.path.exists(dummy_audio_path):
                     import wave
