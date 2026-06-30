@@ -1107,11 +1107,38 @@ async def stream_efs(request: StreamEfsRequest, http_request: Request):
             },
         )
 
+    # Reserve a slot atomically to prevent race conditions where multiple
+    # requests pass the capacity check before any session is created.
+    from session_manager import CapacityError as _CapacityError
+    _slot_reserved = False
+    try:
+        _session_manager.reserve_slot()
+        _slot_reserved = True
+    except _CapacityError:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "CAPACITY_FULL",
+                "message": (
+                    f"Server is at capacity ({MAX_CONCURRENT_STREAMS} concurrent streams). "
+                    "Please try again later."
+                ),
+            },
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Allow-Methods": "*",
+                "Access-Control-Allow-Headers": "*",
+            },
+        )
+
     args = _resolve_generation_args(_parse_args(request.args))
 
     try:
         model_type = normalize_model_type(args.model_type)
     except ValueError as exc:
+        if _slot_reserved:
+            _session_manager.release_slot()
         return JSONResponse(status_code=400, content={"error": str(exc)})
 
     os.makedirs(TEMP_UPLOAD_DIR, exist_ok=True)
@@ -1125,6 +1152,8 @@ async def stream_efs(request: StreamEfsRequest, http_request: Request):
             f"{(time.time() - audio_dl_start) * 1000:.1f}ms"
         )
     except HTTPException as exc:
+        if _slot_reserved:
+            _session_manager.release_slot()
         return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
 
     avatar_start = time.time()
@@ -1132,6 +1161,8 @@ async def stream_efs(request: StreamEfsRequest, http_request: Request):
         request_suffix, None, request.avatar_id, args.use_face_crop, args.preserve_aspect_ratio
     )
     if isinstance(resolved_driving_path, JSONResponse):
+        if _slot_reserved:
+            _session_manager.release_slot()
         return resolved_driving_path
     logger.info(
         f"[{request_suffix}] stream_efs avatar resolve took "
@@ -1199,6 +1230,7 @@ async def stream_efs(request: StreamEfsRequest, http_request: Request):
                 request_id=request_suffix,
                 preserve_aspect_ratio=args.preserve_aspect_ratio,
                 expression_scale=args.expression_scale,
+                slot_reserved=_slot_reserved,
             ),
             endpoint="/stream-efs",
             request_id=request_suffix,

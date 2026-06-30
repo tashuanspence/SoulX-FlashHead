@@ -31,6 +31,7 @@ async def generate_mp4_stream(
     request_id: Optional[str] = None,
     preserve_aspect_ratio: bool = False,
     expression_scale: float = 1.0,
+    slot_reserved: bool = False,
 ) -> AsyncGenerator[bytes, None]:
     """
     Async generator that yields fragmented MP4 chunks.
@@ -119,6 +120,8 @@ async def generate_mp4_stream(
     # Early capacity check to avoid race conditions
     if _session_manager.is_at_capacity():
         logger.warning(f"[{session_id}] Capacity full before session creation — rejecting MPEG stream")
+        if slot_reserved:
+            _session_manager.release_slot()
         return
 
     session_created = False
@@ -130,8 +133,12 @@ async def generate_mp4_stream(
             infer_params=infer_params,
         )
         session_created = True
+        if slot_reserved:
+            _session_manager.release_slot()
     except CapacityError:
         logger.warning(f"[{session_id}] Capacity full — rejecting MPEG stream")
+        if slot_reserved:
+            _session_manager.release_slot()
         return
 
     logger.info(
@@ -375,3 +382,5 @@ async def generate_mp4_stream(
         if session_created:
             _session_manager.close_session(session_id)
             logger.info(f"[{session_id}] session closed: active={_session_manager.active_count()}/{_session_manager.max_streams}")
+        elif slot_reserved:
+            _session_manager.release_slot()

@@ -40,6 +40,8 @@ class ConcurrentSessionManager:
         self._sessions: Dict[str, object] = {}
         # session_id → creation timestamp
         self._created_at: Dict[str, float] = {}
+        # Pending reservations (slots held before session creation completes)
+        self._reservations: int = 0
 
         logger.info(
             f"ConcurrentSessionManager initialised: max_streams={max_streams}"
@@ -70,7 +72,7 @@ class ConcurrentSessionManager:
     # ------------------------------------------------------------------
 
     def active_count(self) -> int:
-        return len(self._sessions)
+        return len(self._sessions) + self._reservations
 
     def is_at_capacity(self) -> bool:
         return self.active_count() >= self.max_streams
@@ -142,6 +144,36 @@ class ConcurrentSessionManager:
                 pass
             self._emit_capacity_gauges()
 
+    def reserve_slot(self) -> None:
+        """Atomically reserve a capacity slot before session creation."""
+        if self.is_at_capacity():
+            try:
+                from app import log_event
+                log_event("capacity_rejected", session_id="reservation", active_streams=self.active_count(), capacity=self.max_streams)
+            except Exception:
+                pass
+            self._emit_capacity_gauges()
+            raise CapacityError(
+                f"Server is at capacity ({self.max_streams} concurrent streams). "
+                "Please try again later."
+            )
+        self._reservations += 1
+        logger.info(
+            f"Slot reserved. Active: {self.active_count()}/{self.max_streams} "
+            f"(sessions={len(self._sessions)}, reservations={self._reservations})"
+        )
+        self._emit_capacity_gauges()
+
+    def release_slot(self) -> None:
+        """Release a previously reserved slot."""
+        if self._reservations > 0:
+            self._reservations -= 1
+            logger.info(
+                f"Slot released. Active: {self.active_count()}/{self.max_streams} "
+                f"(sessions={len(self._sessions)}, reservations={self._reservations})"
+            )
+            self._emit_capacity_gauges()
+
     # ------------------------------------------------------------------
     # Status / metrics
     # ------------------------------------------------------------------
@@ -165,4 +197,5 @@ class ConcurrentSessionManager:
             "available": self.max_streams - self.active_count(),
             "at_capacity": self.is_at_capacity(),
             "sessions": sessions_info,
+            "reservations": self._reservations,
         }
