@@ -1578,15 +1578,42 @@ async def pregen_generate(request: StreamEfsRequest, http_request: Request):
             },
         )
 
-    args = _parse_args(request.args)
+    from session_manager import CapacityError as _CapacityError
+    _slot_reserved = False
+    try:
+        _session_manager.reserve_slot()
+        _slot_reserved = True
+    except _CapacityError:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "CAPACITY_FULL",
+                "message": (
+                    f"Server is at capacity ({MAX_CONCURRENT_STREAMS} concurrent streams). "
+                    "Please try again later."
+                ),
+            },
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Allow-Methods": "*",
+                "Access-Control-Allow-Headers": "*",
+            },
+        )
+
+    args = _resolve_generation_args(_parse_args(request.args))
 
     try:
         model_type = normalize_model_type(args.model_type)
     except ValueError as exc:
+        if _slot_reserved:
+            _session_manager.release_slot()
         return JSONResponse(status_code=400, content={"error": str(exc)})
 
     # Validate mutually exclusive flags
     if args.use_face_crop and args.preserve_aspect_ratio:
+        if _slot_reserved:
+            _session_manager.release_slot()
         return JSONResponse(
             status_code=400,
             content={
@@ -1605,12 +1632,16 @@ async def pregen_generate(request: StreamEfsRequest, http_request: Request):
     try:
         temp_audio_path = await download_audio_from_url(request.audio, request_suffix)
     except HTTPException as exc:
+        if _slot_reserved:
+            _session_manager.release_slot()
         return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
 
     resolved_driving_path = await _resolve_driving_image_path(
         request_suffix, None, request.avatar_id, args.use_face_crop, args.preserve_aspect_ratio
     )
     if isinstance(resolved_driving_path, JSONResponse):
+        if _slot_reserved:
+            _session_manager.release_slot()
         return resolved_driving_path
 
     if args.preserve_aspect_ratio:
@@ -1647,7 +1678,7 @@ async def pregen_generate(request: StreamEfsRequest, http_request: Request):
         status="STARTED",
     )
 
-    video_path = os.path.join(TEMP_OUTPUT_DIR, f"output_{ts}.mp4")
+    video_path = os.path.join(TEMP_OUTPUT_DIR, f"output_{request_suffix}.mp4")
     try:
         with traced_span("generation.file", request_id=request_suffix, model_type=model_type):
             await generate_mp4(
@@ -1686,12 +1717,16 @@ async def pregen_generate(request: StreamEfsRequest, http_request: Request):
             duration_ms=duration_ms,
             error=str(exc),
         )
+        if _slot_reserved:
+            _session_manager.release_slot()
         raise
 
     duration_ms = round((time.time() - request_start) * 1000, 2)
     log_event("generation_completed", **generation_log_fields(request_suffix, "mp4_file", model_type, duration_ms=duration_ms, output_path=video_path, status="success"))
     increment("soulx.generation.success", tags=generation_metric_tags("mp4_file", model_type, status="success", endpoint="pregen_generate"))
     distribution("soulx.generation.duration_ms", duration_ms, tags=tags)
+    if _slot_reserved:
+        _session_manager.release_slot()
 
     return FileResponse(
         video_path,

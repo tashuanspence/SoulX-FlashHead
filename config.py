@@ -10,7 +10,7 @@ def _env_flag(name: str, default: bool = False) -> bool:
 # Maximum number of concurrent inference streams.
 # Model_Lite on a single RTX4090 supports up to 3 real-time (25+ FPS) streams.
 # Raise this value on EC2 p5 (H100) if benchmarks confirm headroom.
-MAX_CONCURRENT_STREAMS: int = int(os.environ.get("MAX_CONCURRENT_STREAMS", 1))
+MAX_CONCURRENT_STREAMS: int = int(os.environ.get("MAX_CONCURRENT_STREAMS", 3))
 
 # Model checkpoint paths
 _EFS_MODEL_DIR = "/shared_volume/forward/soulx-head/models"
