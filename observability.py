@@ -17,14 +17,18 @@ VERBOSE = os.environ.get("SOULX_VERBOSE", os.environ.get("VERBOSE", "false")).lo
 server_started = False
 
 
+HEALTH_CHECK_PATHS = ["GET / ", "GET /status", "GET /api/status", "GET /runpod/health", "GET /api/runpod/health", "GET /health", "GET /healthz"]
+
+
+def _is_health_check(message: str) -> bool:
+    return any(path in message for path in HEALTH_CHECK_PATHS)
+
+
 class HealthCheckFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        if VERBOSE:
-            return True
         msg = record.getMessage()
-        for path in ["GET / ", "GET /status", "GET /api/status", "GET /runpod/health", "GET /api/runpod/health", "GET /health", "GET /healthz"]:
-            if path in msg:
-                return False
+        if _is_health_check(msg):
+            return False
         return True
 
 
@@ -44,7 +48,12 @@ def _log_filter(record):
     if record["level"].no >= 30:
         return True
 
-    # If verbose is enabled, show everything
+    # Suppress health check logs regardless of verbose mode
+    message = record["message"]
+    if _is_health_check(message) or '"path": "/api/status"' in message or '"path": "/status"' in message or '"path": "/health"' in message or '"path": "/healthz"' in message:
+        return False
+
+    # If verbose is enabled, show everything else
     if VERBOSE:
         return True
 
@@ -53,7 +62,6 @@ def _log_filter(record):
         return True
 
     # After startup, only show explicit [REQUEST] logs or specific summaries
-    message = record["message"]
     if "[REQUEST]" in message:
         return True
 
