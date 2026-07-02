@@ -121,13 +121,13 @@ class Mp4StreamEncoder:
             self.error = str(exc)
         finally:
             self.chunk_queue.put(None)
-            logger.info(f"[{self.job_id}] Reader done ({chunk_count} chunks)")
+            logger.debug(f"[{self.job_id}] Reader done ({chunk_count} chunks)")
 
     def start(self):
         if self.is_running:
             return
         cmd = self._build_cmd()
-        logger.info(f"[{self.job_id}] Starting MP4 encoder")
+        logger.debug(f"[{self.job_id}] Starting MP4 encoder")
         self._process = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, bufsize=0,

@@ -72,7 +72,7 @@ async def generate_mp4_stream(
 
     init_start = time.time()
     pipeline = init_pipeline(FLASHHEAD_CKPT_DIR, WAV2VEC_DIR, model_type)
-    logger.info(
+    logger.debug(
         f"[{session_id}] pipeline init/lazy-load for model_type={model_type} "
         f"took {(time.time() - init_start) * 1000:.1f}ms"
     )
@@ -91,11 +91,11 @@ async def generate_mp4_stream(
     if should_composite(driving_image_path, preserve_aspect_ratio):
         background_data = prepare_background(driving_image_path, model_output_size=512 * output_scale)
         if background_data:
-            logger.info(
+            logger.debug(
                 f"[{session_id}] Aspect ratio preservation enabled: "
                 f"output will be {background_data[3]}x{background_data[4]}"
             )
-    logger.info(
+    logger.debug(
         f"[{session_id}] background/aspect setup took "
         f"{(time.time() - background_start) * 1000:.1f}ms"
     )
@@ -109,7 +109,7 @@ async def generate_mp4_stream(
         logger.debug(f"[{session_id}] Acquiring gpu_semaphore for session setup (MPEG)")
         setup_start = time.time()
         await loop.run_in_executor(None, prepare_session_base_data, pipeline, ctx)
-        logger.info(
+        logger.debug(
             f"[{session_id}] prepare_session_base_data took "
             f"{(time.time() - setup_start) * 1000:.1f}ms"
         )
@@ -139,7 +139,7 @@ async def generate_mp4_stream(
             _session_manager.release_slot()
         return
 
-    logger.info(
+    logger.debug(
         f"[{session_id}] generation started: type=mpeg_stream model_type={model_type} "
         f"active={_session_manager.active_count()}/{_session_manager.max_streams}"
     )
@@ -161,7 +161,7 @@ async def generate_mp4_stream(
         human_speech_array_all = librosa.resample(human_speech_array_all, orig_sr=sr_native, target_sr=sample_rate)
     if len(human_speech_array_all.shape) > 1:
         human_speech_array_all = human_speech_array_all.mean(axis=1)
-    logger.info(
+    logger.debug(
         f"[{session_id}] audio load/resample took "
         f"{(time.time() - audio_load_start) * 1000:.1f}ms "
         f"sr_native={sr_native} target_sr={sample_rate} samples={len(human_speech_array_all)}"
@@ -217,7 +217,7 @@ async def generate_mp4_stream(
     encoder_start_time = time.time()
     with traced_span("mpeg.encoder.start", session_id=session_id, fragment_duration_us=fragment_duration_us):
         encoder.start()
-    logger.info(
+    logger.debug(
         f"[{session_id}] encoder.start took "
         f"{(time.time() - encoder_start_time) * 1000:.1f}ms"
     )
@@ -257,7 +257,7 @@ async def generate_mp4_stream(
                 pipeline, audio_array, audio_start_idx, audio_end_idx,
             )
             if chunk_idx == 0:
-                logger.info(
+                logger.debug(
                     f"[{session_id}] first chunk audio embedding took "
                     f"{(time.time() - embedding_start) * 1000:.1f}ms"
                 )
@@ -268,7 +268,7 @@ async def generate_mp4_stream(
                 )
 
             if chunk_idx == 0:
-                logger.info(
+                logger.debug(
                     f"[{session_id}] first chunk inference+embedding took "
                     f"{(time.time() - chunk_start) * 1000:.1f}ms"
                 )
@@ -276,7 +276,7 @@ async def generate_mp4_stream(
             cpu_copy_start = time.time()
             frames = video_tensor.cpu()
             if chunk_idx == 0:
-                logger.info(
+                logger.debug(
                     f"[{session_id}] first chunk cpu copy took "
                     f"{(time.time() - cpu_copy_start) * 1000:.1f}ms"
                 )
@@ -291,7 +291,7 @@ async def generate_mp4_stream(
                 frame_np = scale_frame(frames[i].numpy().astype(np.uint8), output_scale)
                 encoder.add_frame(frame_np)
             if chunk_idx == 0:
-                logger.info(
+                logger.debug(
                     f"[{session_id}] first chunk frame enqueue took "
                     f"{(time.time() - add_frames_start) * 1000:.1f}ms frames={frames.shape[0] - start_idx}"
                 )
@@ -306,7 +306,7 @@ async def generate_mp4_stream(
             async for mp4_chunk in _drain_encoder(first_timeout=timeout):
                 if chunk_idx == 0 and not first_yielded:
                     first_yielded = True
-                    logger.info(
+                    logger.debug(
                         f"[{session_id}] first MP4 chunk ready after "
                         f"{(time.time() - stream_start) * 1000:.1f}ms "
                         f"drain_wait={(time.time() - drain_start) * 1000:.1f}ms"
@@ -357,7 +357,7 @@ async def generate_mp4_stream(
             if chunk:
                 yield chunk
 
-        logger.info(f"[{session_id}] generation completed: type=mpeg_stream")
+        logger.debug(f"[{session_id}] generation completed: type=mpeg_stream")
         duration_ms = round((time.time() - generation_start) * 1000, 2)
         log_event("generation_completed", **generation_log_fields(session_id, "mpeg_stream", model_type, session_id=session_id, status="success", duration_ms=duration_ms))
         increment("soulx.generation.success", tags=generation_metric_tags("mpeg_stream", model_type, status="success", endpoint="generate-mpeg-stream"))
@@ -379,6 +379,6 @@ async def generate_mp4_stream(
         # Only cleanup if session was actually created
         if session_created:
             _session_manager.close_session(session_id)
-            logger.info(f"[{session_id}] session closed: active={_session_manager.active_count()}/{_session_manager.max_streams}")
+            logger.debug(f"[{session_id}] session closed: active={_session_manager.active_count()}/{_session_manager.max_streams}")
         elif slot_reserved:
             _session_manager.release_slot()
