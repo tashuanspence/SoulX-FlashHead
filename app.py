@@ -1856,6 +1856,19 @@ async def stream_status():
                 "Access-Control-Allow-Headers": "*",
             },
         )
+    if _session_manager.active_count() > 0:
+        status = _session_manager.get_status()
+        if isinstance(status, dict):
+            return JSONResponse(
+                status,
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Credentials": "true",
+                    "Access-Control-Allow-Methods": "*",
+                    "Access-Control-Allow-Headers": "*",
+                },
+            )
+        return status
     return _session_manager.get_status()
 
 @app.get("/api/compositor/stats", summary="Get aspect ratio compositor cache statistics")
