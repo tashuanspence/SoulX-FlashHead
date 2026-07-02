@@ -227,9 +227,6 @@ class FlashHeadPipeline:
 
     @torch.no_grad()
     def generate(self, audio_embedding, context_scale: float = 1.0):
-        if self.rank == 0:
-            logger.info(f'[generate] starting: frames={self.frame_num}, steps={len(self.timesteps)-1}, context_scale={context_scale}')
-        gen_start_time = time.time()
         with torch.no_grad():
 
             noise = torch.randn(
@@ -314,9 +311,6 @@ class FlashHeadPipeline:
             reference_motion_frames = self.ref_img_latent[:, :latent_motion_frames.shape[1]].to(latent_motion_frames.device, dtype=latent_motion_frames.dtype)
             latent_motion_frames = latent_motion_frames * (1.0 - damping) + reference_motion_frames * damping
         self.latent_motion_frames = latent_motion_frames
-
-        if self.rank == 0:
-            logger.info(f'[generate] complete: {time.time() - gen_start_time:.3f}s')
 
         gen_video_samples = videos #[:, :, self.motion_frames_num:]
 
